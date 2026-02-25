@@ -12,6 +12,13 @@ import (
 	"github.com/khairu-aqsara/ezcode/ui/components"
 )
 
+// Build-time variables injected via -ldflags.
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	GitCommit = "unknown"
+)
+
 func main() {
 	// Initialize config
 	homeDir, err := os.UserHomeDir()

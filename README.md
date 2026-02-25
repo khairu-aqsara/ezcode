@@ -2,6 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/go-1.24.5-00ADD8?logo=go)](https://golang.org/doc/go1.24)
 [![Module](https://img.shields.io/badge/module-github.com%2Fkhairu--aqsara%2Fezcode-blue)](https://github.com/khairu-aqsara/ezcode)
+[![Release](https://github.com/khairu-aqsara/ezcode/actions/workflows/release.yml/badge.svg)](https://github.com/khairu-aqsara/ezcode/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A terminal UI for semantically exploring any codebase and its Git history through a locally-running MCP server backed by Qdrant vector search.
@@ -361,6 +362,19 @@ Arguments are passed as `key=value` pairs separated by spaces. EzCode fetches th
 ---
 
 ## Development
+
+### CI / CD
+
+Every push to `main` runs the [Release workflow](.github/workflows/release.yml) automatically:
+
+1. **Test** — runs `go test ./...` across the full module.
+2. **Tag** — reads the latest `vMAJOR.MINOR.PATCH` tag, increments the patch number, and pushes the new annotated tag (e.g. `v0.0.1` → `v0.0.2`).
+3. **Build** — compiles for all five targets (Linux amd64/arm64, macOS amd64/arm64, Windows amd64) with version info embedded via `-ldflags`.
+4. **Release** — creates a GitHub Release for the new tag, attaches all five binaries, and auto-generates release notes from the commits since the previous tag.
+
+The release step requires no manual intervention. If a push fails tests, the tag and release steps are skipped.
+
+---
 
 A `Makefile` is provided for all common workflows. Run `make` with no arguments to see every available target:
 

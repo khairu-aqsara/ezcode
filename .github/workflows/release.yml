@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write   # needed to push tags and create releases
+
+jobs:
+  # ── 1. Test ────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+
+  # ── 2. Bump version & tag ──────────────────────────────────────────────────
+  tag:
+    name: Bump Version & Tag
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so we can read the latest tag
+          fetch-tags: true
+
+      - name: Bump patch version and push tag
+        id: bump
+        run: |
+          # Find the latest semver tag (default to v0.0.0 if none exist)
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+          fi
+          echo "Latest tag: $LATEST"
+
+          # Strip leading 'v' and split
+          VERSION="${LATEST#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          # Increment patch
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New tag: $NEW_TAG"
+
+          # Configure git identity for the tag commit
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create and push the annotated tag
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+          git push origin "$NEW_TAG"
+
+          echo "new_tag=$NEW_TAG"  >> "$GITHUB_OUTPUT"
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+  # ── 3. Build for all platforms ────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: tag
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${{ needs.tag.outputs.version }}"
+          BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          GIT_COMMIT="${{ github.sha }}"
+
+          go build \
+            -ldflags="-s -w \
+              -X main.Version=${VERSION} \
+              -X main.BuildTime=${BUILD_TIME} \
+              -X main.GitCommit=${GIT_COMMIT}" \
+            -o "ezcode-${{ matrix.suffix }}${{ matrix.ext || '' }}" \
+            ./cmd/ezcode
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezcode-${{ matrix.suffix }}
+          path: ezcode-${{ matrix.suffix }}${{ matrix.ext || '' }}
+          retention-days: 1
+
+  # ── 4. Release ────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate release notes from git log
+        id: notes
+        run: |
+          TAG="${{ needs.tag.outputs.new_tag }}"
+          PREV=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p')
+
+          if [ -n "$PREV" ]; then
+            NOTES=$(git log "${PREV}..${TAG}" --pretty=format:"- %s (%h)" --no-merges)
+          else
+            NOTES=$(git log "${TAG}" --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Write to file to safely handle multi-line content
+          echo "$NOTES" > release_notes.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.new_tag }}
+          name: ${{ needs.tag.outputs.new_tag }}
+          body_path: release_notes.txt
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/ezcode-linux-amd64
+            artifacts/ezcode-linux-arm64
+            artifacts/ezcode-darwin-amd64
+            artifacts/ezcode-darwin-arm64
+            artifacts/ezcode-windows-amd64.exe
