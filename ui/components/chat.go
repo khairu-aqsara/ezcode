@@ -665,6 +665,13 @@ func (m *ChatModel) indexCmd(reqType string, tabIndex int) tea.Cmd {
 			//   "No previous snapshot found"             – snapshot file missing
 			// We treat ANY reindex_changes error as a signal to run a full index,
 			// because that tool is only meaningful after a first successful index_codebase.
+			//
+			// Edge case: a previous indexing run was interrupted mid-way. The server
+			// may have written a snapshot file (so reindex_changes succeeds and reports
+			// "no changes") but the Qdrant collection is still incomplete/absent
+			// (get_index_status returns "not_indexed"). We detect this by checking the
+			// index status after a successful reindex_changes and forcing a full index
+			// when the collection is still not fully indexed.
 			result, err := m.mcpMgr.ReindexChanges(ctx, projectPath)
 
 			needsFullIndex := false
@@ -672,6 +679,16 @@ func (m *ChatModel) indexCmd(reqType string, tabIndex int) tea.Cmd {
 				needsFullIndex = true
 			} else if result != nil && result.IsError {
 				needsFullIndex = true
+			} else {
+				// reindex_changes succeeded — verify the collection is actually indexed.
+				statusCtx, statusCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				indexStatus, statusErr := m.mcpMgr.GetIndexStatus(statusCtx, projectPath)
+				statusCancel()
+				if statusErr != nil || indexStatus == nil || !indexStatus.IsIndexed() {
+					// Collection absent or incomplete despite a successful incremental run
+					// (interrupted previous indexing left a stale snapshot on disk).
+					needsFullIndex = true
+				}
 			}
 
 			if needsFullIndex {
@@ -725,6 +742,11 @@ func (m *ChatModel) processIndexResult(result interface{}, err error, tabIndex i
 
 	if final == "" {
 		final = "Indexing completed successfully!"
+	}
+
+	const maxResultLength = 10000
+	if len(final) > maxResultLength {
+		final = final[:maxResultLength] + "\n\n[Output truncated due to large response...]"
 	}
 
 	return searchResultMsg{content: final, tabIndex: tabIndex}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -118,7 +120,13 @@ func NewManager(c *client.Client) *Manager {
 // GetDefaultClient returns a real HTTP client configured to connect to localhost:3000
 func GetDefaultClient() (*client.Client, error) {
 	// Using 127.0.0.1 over localhost to prevent IPv6 [::1] connection refused errors
-	mcpClient, err := client.NewStreamableHttpClient("http://127.0.0.1:3000/mcp")
+	httpClient := &http.Client{
+		Timeout: 1 * time.Hour, // Large timeout for indexing operations
+	}
+	mcpClient, err := client.NewStreamableHttpClient(
+		"http://127.0.0.1:3000/mcp",
+		transport.WithHTTPBasicClient(httpClient),
+	)
 	if err != nil {
 		return nil, err
 	}
